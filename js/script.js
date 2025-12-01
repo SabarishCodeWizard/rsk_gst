@@ -19,8 +19,8 @@ document.addEventListener('DOMContentLoaded', async function () {
         await loadInvoiceForEdit(editInvoiceId);
     } else {
         // Set default tax rates for new invoice
-        document.getElementById('cgstRate').value = 2.5;
-        document.getElementById('sgstRate').value = 2.5;
+        document.getElementById('cgstRate').value = 9;
+        document.getElementById('sgstRate').value = 9;
         document.getElementById('igstRate').value = 0;
 
         // Set default invoice number
@@ -504,8 +504,8 @@ async function resetForm() {
         document.getElementById('supplyDate').value = today;
 
         // Set default tax rates
-        document.getElementById('cgstRate').value = 2.5;
-        document.getElementById('sgstRate').value = 2.5;
+        document.getElementById('cgstRate').value = 9;
+        document.getElementById('sgstRate').value = 9;
         document.getElementById('igstRate').value = 0;
         document.getElementById('reverseCharge').value = 'N';
         document.getElementById('state').value = 'TAMILNADU';
