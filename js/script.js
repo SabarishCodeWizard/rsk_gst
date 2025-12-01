@@ -1,0 +1,538 @@
+// script.js - Main application logic for index.html
+document.addEventListener('DOMContentLoaded', async function () {
+    // Initialize database - wait for Firebase to be ready
+    await db.waitForInit();
+
+    // Initialize invoice suggestions
+    await initializeInvoiceSuggestions();
+
+    // Set current date
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('invoiceDate').value = today;
+    document.getElementById('supplyDate').value = today;
+
+    // Check if we're editing an existing invoice
+    const urlParams = new URLSearchParams(window.location.search);
+    const editInvoiceId = urlParams.get('edit');
+
+    if (editInvoiceId) {
+        await loadInvoiceForEdit(editInvoiceId);
+    } else {
+        // Set default tax rates for new invoice
+        document.getElementById('cgstRate').value = 2.5;
+        document.getElementById('sgstRate').value = 2.5;
+        document.getElementById('igstRate').value = 0;
+
+        // Set default invoice number
+        try {
+            const nextInvoiceNumber = await db.getNextInvoiceNumber();
+            document.getElementById('invoiceNo').value = nextInvoiceNumber;
+        } catch (error) {
+            console.error('Error getting next invoice number:', error);
+            document.getElementById('invoiceNo').value = '001/' + new Date().getFullYear().toString().slice(-2);
+        }
+    }
+
+    // Auto-fill customer details on phone number input
+    document.getElementById('customerPhone').addEventListener('blur', async function () {
+        const phone = this.value.trim();
+
+        if (Utils.isValidPhone(phone)) {
+            try {
+                const customer = await db.getCustomerByPhone(phone);
+
+                if (customer) {
+                    document.getElementById('customerName').value = customer.name || '';
+                    document.getElementById('customerAddress').value = customer.address || '';
+                    document.getElementById('customerGSTIN').value = customer.gstin || '';
+                }
+            } catch (error) {
+                console.error('Error fetching customer:', error);
+            }
+        }
+    });
+
+    // New E-Way Bill Button Listener
+    document.getElementById('generateEwayBill').addEventListener('click', generateEwayBill);
+    // Save customer details when form is filled
+    document.getElementById('customerName').addEventListener('blur', saveCustomerDetails);
+    document.getElementById('customerAddress').addEventListener('blur', saveCustomerDetails);
+    document.getElementById('customerGSTIN').addEventListener('blur', saveCustomerDetails);
+
+    async function saveCustomerDetails() {
+        const phone = document.getElementById('customerPhone').value.trim();
+        const name = document.getElementById('customerName').value.trim();
+        const address = document.getElementById('customerAddress').value.trim();
+        const gstin = document.getElementById('customerGSTIN').value.trim();
+
+        if (Utils.isValidPhone(phone) && name) {
+            try {
+                await db.addCustomer({
+                    phone: phone,
+                    name: name,
+                    address: address,
+                    gstin: gstin
+                });
+                console.log('Customer saved successfully');
+            } catch (error) {
+                console.error('Error saving customer:', error);
+            }
+        }
+    }
+
+    // Product shortcuts autocomplete
+    document.addEventListener('input', async function (e) {
+        if (e.target.classList.contains('product-description')) {
+            const input = e.target.value.trim();
+
+            if (input.length >= 2) {
+                try {
+                    const shortcuts = await db.getProducts();
+                    const matchedShortcut = shortcuts.find(s => s.shortcut === input);
+
+                    if (matchedShortcut) {
+                        e.target.value = matchedShortcut.description;
+                        // Focus on next field
+                        e.target.closest('tr').querySelector('.hsn-code').focus();
+                    }
+                } catch (error) {
+                    console.error('Error fetching products:', error);
+                }
+            }
+        }
+    });
+
+    // Calculate row amounts
+    document.addEventListener('input', function (e) {
+        if (e.target.classList.contains('qty') || e.target.classList.contains('rate')) {
+            const row = e.target.closest('tr');
+            calculateRowAmount(row);
+            calculateTotals();
+        }
+    });
+
+    // Tax rate changes
+    document.addEventListener('input', function (e) {
+        if (e.target.classList.contains('tax-rate')) {
+            calculateTotals();
+        }
+    });
+
+    // Add new product row
+    document.getElementById('addRow').addEventListener('click', function () {
+        addProductRow();
+    });
+
+    // Remove product row
+    document.addEventListener('click', function (e) {
+        if (e.target.classList.contains('remove-row')) {
+            e.target.closest('tr').remove();
+            renumberRows();
+            calculateTotals();
+        }
+    });
+
+    // Generate PDF
+    document.getElementById('generatePDF').addEventListener('click', function () {
+        generatePDF();
+    });
+
+    // Save bill
+    document.getElementById('saveBill').addEventListener('click', function () {
+        saveBill();
+    });
+
+    // Reset form
+    document.getElementById('resetForm').addEventListener('click', function () {
+        resetForm();
+    });
+
+    // Logout
+    document.getElementById('logoutBtn').addEventListener('click', function () {
+        sessionStorage.removeItem('isLoggedIn');
+        window.location.href = 'login.html';
+    });
+
+    // Add event listeners for the new buttons
+    document.getElementById('applySuggestion').addEventListener('click', function () {
+        applyInvoiceSuggestion();
+    });
+
+    document.getElementById('refreshSuggestions').addEventListener('click', async function () {
+        await loadInvoiceSuggestions();
+
+        // Show refresh confirmation
+        const refreshBtn = this;
+        const originalHtml = refreshBtn.innerHTML;
+        refreshBtn.innerHTML = '<i class="fas fa-check"></i> Refreshed!';
+        refreshBtn.style.background = '#27ae60';
+
+        setTimeout(() => {
+            refreshBtn.innerHTML = originalHtml;
+            refreshBtn.style.background = '';
+        }, 2000);
+    });
+
+    // Auto-refresh suggestions when invoice date changes
+    document.getElementById('invoiceDate').addEventListener('change', async function () {
+        const selectedDate = this.value;
+        const financialYear = Utils.getCurrentFinancialYear();
+
+        // Check if the selected date is in current financial year
+        if (!Utils.isDateInFinancialYear(selectedDate, financialYear)) {
+            alert(`Note: Selected date is not in current financial year (${financialYear.display}). Invoice numbers are recycled within the financial year.`);
+        }
+
+        await loadInvoiceSuggestions();
+    });
+
+    // Initialize with one row if no existing invoice
+    if (!editInvoiceId) {
+        addProductRow();
+    }
+});
+
+async function initializeInvoiceSuggestions() {
+    currentFinancialYear = Utils.getCurrentFinancialYear();
+    await loadInvoiceSuggestions();
+
+    // Update financial year display
+    document.getElementById('currentFinancialYear').textContent = currentFinancialYear.display;
+}
+
+async function loadInvoiceSuggestions() {
+    try {
+        const invoices = await db.getInvoices();
+        const currentYearInvoices = invoices.filter(invoice =>
+            Utils.isDateInFinancialYear(invoice.date, currentFinancialYear)
+        );
+
+        // Get the highest invoice number for current financial year
+        let lastInvoiceNumber = 0;
+
+        currentYearInvoices.forEach(invoice => {
+            const invoiceNum = Utils.parseInvoiceNumber(invoice.invoiceNumber);
+            if (invoiceNum > lastInvoiceNumber) {
+                lastInvoiceNumber = invoiceNum;
+            }
+        });
+
+        invoiceSuggestions = {
+            lastInvoice: lastInvoiceNumber,
+            nextInvoice: lastInvoiceNumber + 1
+        };
+
+        updateSuggestionDisplay();
+    } catch (error) {
+        console.error('Error loading invoice suggestions:', error);
+    }
+}
+
+function updateSuggestionDisplay() {
+    if (invoiceSuggestions) {
+        const lastDisplay = invoiceSuggestions.lastInvoice > 0
+            ? Utils.formatInvoiceNumber(invoiceSuggestions.lastInvoice)
+            : 'No invoices yet';
+
+        const nextDisplay = Utils.formatInvoiceNumber(invoiceSuggestions.nextInvoice);
+
+        document.getElementById('lastInvoiceNumber').textContent = lastDisplay;
+        document.getElementById('nextInvoiceNumber').textContent = nextDisplay;
+    }
+}
+
+function applyInvoiceSuggestion() {
+    if (invoiceSuggestions) {
+        const suggestedNumber = Utils.formatInvoiceNumber(invoiceSuggestions.nextInvoice);
+        document.getElementById('invoiceNo').value = suggestedNumber;
+
+        // Show confirmation
+        const suggestionElement = document.getElementById('nextInvoiceNumber');
+        const originalText = suggestionElement.textContent;
+        suggestionElement.textContent = 'Applied!';
+        suggestionElement.style.color = '#27ae60';
+
+        setTimeout(() => {
+            suggestionElement.textContent = originalText;
+            suggestionElement.style.color = '#e74c3c';
+        }, 2000);
+    }
+}
+async function generateEwayBill() {
+    const gstin = '33CLJPG4331G1ZG'; // The GSTIN from the company details
+
+    try {
+        // 1. Copy GSTIN to the clipboard
+        await navigator.clipboard.writeText(gstin);
+
+        // Confirmation message for the user
+        const btn = document.getElementById('generateEwayBill');
+        const originalHtml = btn.innerHTML;
+
+        btn.innerHTML = '<i class="fas fa-clipboard-check"></i> GSTIN Copied!';
+        btn.style.background = '#27ae60';
+
+        setTimeout(() => {
+            btn.innerHTML = originalHtml;
+            btn.style.background = ''; // Reset background
+
+            // 2. Redirect to the e-Way Bill portal after a short delay
+            // This delay helps ensure the copy operation completes before the redirect.
+            window.open('https://ewaybillgst.gov.in/Login.aspx', '_blank');
+
+        }, 1000); // 1-second delay for confirmation and then redirect
+
+    } catch (err) {
+        console.error('Failed to copy text or redirect: ', err);
+        alert('Could not automatically copy GSTIN. Please copy it manually: ' + gstin);
+
+        // Open the portal even if copy failed
+        window.open('https://ewaybillgst.gov.in/Login.aspx', '_blank');
+    }
+}
+
+async function loadInvoiceForEdit(invoiceId) {
+    try {
+        let invoice = await db.getInvoiceByNumber(invoiceId);
+
+        if (!invoice) {
+            // Try getting by ID if not found by number
+            const allInvoices = await db.getInvoices();
+            const foundInvoice = allInvoices.find(inv => inv.id === invoiceId);
+            if (!foundInvoice) {
+                throw new Error('Invoice not found');
+            }
+            invoice = foundInvoice;
+        }
+
+        // Fill basic invoice details
+        document.getElementById('invoiceNo').value = invoice.invoiceNumber;
+        document.getElementById('invoiceDate').value = invoice.date;
+        document.getElementById('customerPhone').value = invoice.customerPhone;
+        document.getElementById('customerName').value = invoice.customerName;
+        document.getElementById('customerAddress').value = invoice.customerAddress;
+        document.getElementById('customerGSTIN').value = invoice.customerGSTIN;
+        document.getElementById('state').value = invoice.state;
+        document.getElementById('stateCode').value = invoice.stateCode;
+        document.getElementById('transportMode').value = invoice.transportMode;
+        document.getElementById('vehicleNumber').value = invoice.vehicleNumber;
+        document.getElementById('supplyDate').value = invoice.supplyDate;
+        document.getElementById('placeOfSupply').value = invoice.placeOfSupply;
+        document.getElementById('reverseCharge').value = invoice.reverseCharge;
+
+        // Fill tax rates
+        document.getElementById('cgstRate').value = invoice.cgstRate;
+        document.getElementById('sgstRate').value = invoice.sgstRate;
+        document.getElementById('igstRate').value = invoice.igstRate;
+
+        // Clear existing rows
+        document.getElementById('productTableBody').innerHTML = '';
+
+        // Add product rows
+        invoice.products.forEach((product, index) => {
+            addProductRow();
+            const rows = document.querySelectorAll('#productTableBody tr');
+            const currentRow = rows[rows.length - 1];
+
+            currentRow.querySelector('.product-description').value = product.description;
+            currentRow.querySelector('.hsn-code').value = product.hsnCode;
+            currentRow.querySelector('.qty').value = product.qty;
+            currentRow.querySelector('.rate').value = product.rate;
+
+            calculateRowAmount(currentRow);
+        });
+
+        calculateTotals();
+
+        // Update button text for edit mode
+        document.getElementById('saveBill').innerHTML = '<i class="fas fa-save"></i> Update Bill';
+    } catch (error) {
+        console.error('Error loading invoice for edit:', error);
+        alert('Error loading invoice data.');
+    }
+}
+
+function addProductRow() {
+    const tbody = document.getElementById('productTableBody');
+    const rowCount = tbody.children.length + 1;
+
+    const row = document.createElement('tr');
+    row.innerHTML = `
+        <td>${rowCount}</td>
+        <td><input type="text" class="product-description"></td>
+        <td><input type="text" class="hsn-code"></td>
+        <td><input type="number" class="qty" value="0"></td>
+        <td><input type="number" class="rate" value="0.00" step="0.01"></td>
+        <td class="amount">0.00</td>
+        <td class="taxable-value">0.00</td>
+        <td><button type="button" class="remove-row">X</button></td>
+    `;
+
+    tbody.appendChild(row);
+}
+
+function renumberRows() {
+    const rows = document.querySelectorAll('#productTableBody tr');
+    rows.forEach((row, index) => {
+        row.cells[0].textContent = index + 1;
+    });
+}
+
+function calculateRowAmount(row) {
+    const qty = parseFloat(row.querySelector('.qty').value) || 0;
+    const rate = parseFloat(row.querySelector('.rate').value) || 0;
+    const amount = qty * rate;
+
+    row.querySelector('.amount').textContent = Utils.formatCurrency(amount);
+    row.querySelector('.taxable-value').textContent = Utils.formatCurrency(amount);
+}
+
+function calculateTotals() {
+    let subTotal = 0;
+
+    document.querySelectorAll('#productTableBody tr').forEach(row => {
+        const taxableValue = parseFloat(row.querySelector('.taxable-value').textContent) || 0;
+        subTotal += taxableValue;
+    });
+
+    const cgstRate = parseFloat(document.getElementById('cgstRate').value) || 0;
+    const sgstRate = parseFloat(document.getElementById('sgstRate').value) || 0;
+    const igstRate = parseFloat(document.getElementById('igstRate').value) || 0;
+
+    const cgstAmount = (subTotal * cgstRate) / 100;
+    const sgstAmount = (subTotal * sgstRate) / 100;
+    const igstAmount = (subTotal * igstRate) / 100;
+
+    const totalTaxAmount = cgstAmount + sgstAmount + igstAmount;
+    const grandTotal = subTotal + totalTaxAmount;
+    const roundOff = Math.round(grandTotal) - grandTotal;
+    const finalTotal = grandTotal + roundOff;
+
+    document.getElementById('subTotal').textContent = Utils.formatCurrency(subTotal);
+    document.getElementById('cgstAmount').textContent = Utils.formatCurrency(cgstAmount);
+    document.getElementById('sgstAmount').textContent = Utils.formatCurrency(sgstAmount);
+    document.getElementById('igstAmount').textContent = Utils.formatCurrency(igstAmount);
+    document.getElementById('totalTaxAmount').textContent = Utils.formatCurrency(totalTaxAmount);
+    document.getElementById('roundOff').textContent = Utils.formatCurrency(roundOff);
+    document.getElementById('grandTotal').textContent = Utils.formatCurrency(finalTotal);
+
+    // Update amount in words
+    document.getElementById('amountInWords').textContent = Utils.numberToWords(finalTotal);
+}
+
+async function saveBill() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const editInvoiceId = urlParams.get('edit');
+
+    const invoiceData = collectInvoiceData();
+
+    try {
+        if (editInvoiceId) {
+            // Update existing invoice
+            await db.updateInvoice(editInvoiceId, invoiceData);
+            alert('Bill updated successfully!');
+        } else {
+            // Add new invoice
+            await db.addInvoice(invoiceData);
+            alert('Bill saved successfully!');
+        }
+
+        // Redirect to history page after save
+        window.location.href = 'invoice-history.html';
+    } catch (error) {
+        console.error('Error saving bill:', error);
+        alert('Error saving bill. Please try again.');
+    }
+}
+
+function collectInvoiceData() {
+    const products = [];
+
+    document.querySelectorAll('#productTableBody tr').forEach(row => {
+        products.push({
+            description: row.querySelector('.product-description').value,
+            hsnCode: row.querySelector('.hsn-code').value,
+            qty: parseFloat(row.querySelector('.qty').value) || 0,
+            rate: parseFloat(row.querySelector('.rate').value) || 0,
+            amount: parseFloat(row.querySelector('.amount').textContent) || 0,
+            taxableValue: parseFloat(row.querySelector('.taxable-value').textContent) || 0
+        });
+    });
+
+    return {
+        invoiceNumber: document.getElementById('invoiceNo').value,
+        date: document.getElementById('invoiceDate').value,
+        customerPhone: document.getElementById('customerPhone').value,
+        customerName: document.getElementById('customerName').value,
+        customerAddress: document.getElementById('customerAddress').value,
+        customerGSTIN: document.getElementById('customerGSTIN').value,
+        state: document.getElementById('state').value,
+        stateCode: document.getElementById('stateCode').value,
+        transportMode: document.getElementById('transportMode').value,
+        vehicleNumber: document.getElementById('vehicleNumber').value,
+        supplyDate: document.getElementById('supplyDate').value,
+        placeOfSupply: document.getElementById('placeOfSupply').value,
+        reverseCharge: document.getElementById('reverseCharge').value,
+        products: products,
+        subTotal: parseFloat(document.getElementById('subTotal').textContent) || 0,
+        cgstRate: parseFloat(document.getElementById('cgstRate').value) || 0,
+        sgstRate: parseFloat(document.getElementById('sgstRate').value) || 0,
+        igstRate: parseFloat(document.getElementById('igstRate').value) || 0,
+        cgstAmount: parseFloat(document.getElementById('cgstAmount').textContent) || 0,
+        sgstAmount: parseFloat(document.getElementById('sgstAmount').textContent) || 0,
+        igstAmount: parseFloat(document.getElementById('igstAmount').textContent) || 0,
+        totalTaxAmount: parseFloat(document.getElementById('totalTaxAmount').textContent) || 0,
+        roundOff: parseFloat(document.getElementById('roundOff').textContent) || 0,
+        grandTotal: parseFloat(document.getElementById('grandTotal').textContent) || 0,
+        amountInWords: document.getElementById('amountInWords').textContent
+    };
+}
+
+async function resetForm() {
+    if (confirm('Are you sure you want to reset the form? All unsaved data will be lost.')) {
+        document.querySelectorAll('input').forEach(input => {
+            if (input.type !== 'button' && input.type !== 'submit') {
+                input.value = '';
+            }
+        });
+
+        await initializeInvoiceSuggestions();
+
+        // Set default dates
+        const today = new Date().toISOString().split('T')[0];
+        document.getElementById('invoiceDate').value = today;
+        document.getElementById('supplyDate').value = today;
+
+        // Set default tax rates
+        document.getElementById('cgstRate').value = 2.5;
+        document.getElementById('sgstRate').value = 2.5;
+        document.getElementById('igstRate').value = 0;
+        document.getElementById('reverseCharge').value = 'N';
+        document.getElementById('state').value = 'TAMILNADU';
+        document.getElementById('stateCode').value = '33';
+
+        // Set default invoice number
+        try {
+            const nextInvoiceNumber = await db.getNextInvoiceNumber();
+            document.getElementById('invoiceNo').value = nextInvoiceNumber;
+        } catch (error) {
+            console.error('Error getting next invoice number:', error);
+        }
+
+        // Clear product table
+        document.getElementById('productTableBody').innerHTML = '';
+        addProductRow();
+
+        // Reset calculations
+        calculateTotals();
+
+        // Reset button text if it was in edit mode
+        document.getElementById('saveBill').innerHTML = '<i class="fas fa-save"></i> Save BILL';
+
+        // Remove edit parameter from URL
+        if (window.location.search.includes('edit')) {
+            window.history.replaceState({}, document.title, window.location.pathname);
+        }
+    }
+}
+
