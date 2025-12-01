@@ -9,15 +9,15 @@ class Database {
     async init() {
         try {
             // Firebase configuration
-            const firebaseConfig = {
-                apiKey: "AIzaSyCS4tcI_-GdEF6toYG-QKHj3AWETrhBhmc",
-                authDomain: "prgst-f9b07.firebaseapp.com",
-                projectId: "prgst-f9b07",
-                storageBucket: "prgst-f9b07.firebasestorage.app",
-                messagingSenderId: "643004497148",
-                appId: "1:643004497148:web:37d9883d9a9a0fdab56b79",
-                measurementId: "G-DJLVG9YVBK"
-            };
+            // const firebaseConfig = {
+            //     apiKey: "AIzaSyCS4tcI_-GdEF6toYG-QKHj3AWETrhBhmc",
+            //     authDomain: "prgst-f9b07.firebaseapp.com",
+            //     projectId: "prgst-f9b07",
+            //     storageBucket: "prgst-f9b07.firebasestorage.app",
+            //     messagingSenderId: "643004497148",
+            //     appId: "1:643004497148:web:37d9883d9a9a0fdab56b79",
+            //     measurementId: "G-DJLVG9YVBK"
+            // };
 
             // Initialize Firebase
             if (!firebase.apps.length) {
